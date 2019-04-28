@@ -430,12 +430,15 @@ end
 
 
 function _mt:acquire_lock()
-  if get_phase() == "init" or get_phase() == "init_worker" then
+  if not self.sem then
     return true
   end
 
-  if not self.sem then
-    return true
+  do
+    local phase = get_phase()
+    if phase == "init" or phase == "init_worker" then
+      return true
+    end
   end
 
   local ok, err = self.sem:wait(self.config.sem_timeout)
@@ -448,12 +451,15 @@ end
 
 
 function _mt:release_lock()
-  if get_phase() == "init" or get_phase() == "init_worker" then
+  if not self.sem then
     return true
   end
 
-  if not self.sem then
-    return true
+  do
+    local phase = get_phase()
+    if phase == "init" or phase == "init_worker" then
+      return true
+    end
   end
 
   self.sem:post()
