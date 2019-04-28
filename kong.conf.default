@@ -447,6 +447,16 @@
                                  # See the `lua_ssl_trusted_certificate`
                                  # setting to specify a certificate authority.
 
+#pg_semaphore_max = 0            # Sets the number of semaphore resources made
+                                 # available to the semaphore used to limit
+                                 # concurrent connections to the Postgres
+                                 # database. The default value of 0 removes the
+                                 # semaphore concurrency limiter.
+
+#pg_semaphore_timeout = 60       # Defines the timeout, in seconds, after which
+                                 # Postgres query semaphore resource acquisition
+                                 # attempts will fail.
+
 #cassandra_contact_points = 127.0.0.1  # A comma-separated list of contact
                                        # points to your cluster.
                                        # You may specify IP addresses or

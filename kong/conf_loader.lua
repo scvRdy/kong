@@ -119,6 +119,8 @@ local CONF_INFERENCES = {
   pg_password = { typ = "string" },
   pg_ssl = { typ = "boolean" },
   pg_ssl_verify = { typ = "boolean" },
+  pg_semaphore_max = { typ = "number" },
+  pg_semaphore_timeout = { typ = "number" },
 
   cassandra_contact_points = { typ = "array" },
   cassandra_port = { typ = "number" },

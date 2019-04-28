@@ -2,6 +2,7 @@ local logger       = require "kong.cmd.utils.log"
 local pgmoon       = require "pgmoon"
 local arrays       = require "pgmoon.arrays"
 local stringx      = require "pl.stringx"
+local semaphore    = require "ngx.semaphore"
 
 
 local setmetatable = setmetatable
@@ -428,8 +429,45 @@ function _mt:setkeepalive()
 end
 
 
+function _mt:acquire_lock()
+  if get_phase() == "init" or get_phase() == "init_worker" then
+    return true
+  end
+
+  if not self.sem then
+    return true
+  end
+
+  local ok, err = self.sem:wait(self.config.sem_timeout)
+  if not ok then
+    return nil, err
+  end
+
+  return true
+end
+
+
+function _mt:release_lock()
+  if get_phase() == "init" or get_phase() == "init_worker" then
+    return true
+  end
+
+  if not self.sem then
+    return true
+  end
+
+  self.sem:post()
+end
+
+
 function _mt:query(sql)
   local res, err, partial, num_queries
+
+  local ok
+  ok, err = self:acquire_lock()
+  if not ok then
+    return nil, "error acquiring query semaphore: " .. err
+  end
 
   local conn = self:get_stored_connection()
   if conn then
@@ -439,6 +477,7 @@ function _mt:query(sql)
     local connection
     connection, err = connect(self.config)
     if not connection then
+      self:release_lock()
       return nil, err
     end
 
@@ -448,9 +487,11 @@ function _mt:query(sql)
   end
 
   if res then
+    self:release_lock()
     return res, nil, partial, num_queries or err
   end
 
+  self:release_lock()
   return nil, err, partial, num_queries
 end
 
@@ -1021,24 +1062,36 @@ local _M = {}
 
 function _M.new(kong_config)
   local config = {
-    host       = kong_config.pg_host,
-    port       = kong_config.pg_port,
-    timeout    = kong_config.pg_timeout,
-    user       = kong_config.pg_user,
-    password   = kong_config.pg_password,
-    database   = kong_config.pg_database,
-    schema     = kong_config.pg_schema or "",
-    ssl        = kong_config.pg_ssl,
-    ssl_verify = kong_config.pg_ssl_verify,
-    cafile     = kong_config.lua_ssl_trusted_certificate,
+    host        = kong_config.pg_host,
+    port        = kong_config.pg_port,
+    timeout     = kong_config.pg_timeout,
+    user        = kong_config.pg_user,
+    password    = kong_config.pg_password,
+    database    = kong_config.pg_database,
+    schema      = kong_config.pg_schema or "",
+    ssl         = kong_config.pg_ssl,
+    ssl_verify  = kong_config.pg_ssl_verify,
+    cafile      = kong_config.lua_ssl_trusted_certificate,
+    sem_max     = kong_config.pg_semaphore_max or 0,
+    sem_timeout = kong_config.pg_semaphore_timeout or 60,
   }
 
   local db = pgmoon.new(config)
+
+  local sem
+  if config.sem_max > 0 then
+    local err
+    sem, err = semaphore.new(config.sem_max)
+    if not sem then
+      error("Failure creating Postgres connector semaphore: " .. err)
+    end
+  end
 
   return setmetatable({
     config            = config,
     escape_identifier = db.escape_identifier,
     escape_literal    = db.escape_literal,
+    sem               = sem,
   }, _mt)
 end
 
