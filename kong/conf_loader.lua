@@ -119,7 +119,7 @@ local CONF_INFERENCES = {
   pg_password = { typ = "string" },
   pg_ssl = { typ = "boolean" },
   pg_ssl_verify = { typ = "boolean" },
-  pg_semaphore_max = { typ = "number" },
+  pg_max_concurrent_queries = { typ = "number" },
   pg_semaphore_timeout = { typ = "number" },
 
   cassandra_contact_points = { typ = "array" },
@@ -477,12 +477,12 @@ local function check_and_infer(conf)
     end
   end
 
-  if conf.pg_semaphore_max < 0 then
-    errors[#errors + 1] = "pg_semaphore_max must be an integer greater than 0"
+  if conf.pg_max_concurrent_queries < 0 then
+    errors[#errors + 1] = "pg_max_concurrent_queries must be an integer greater than 0"
   end
 
-  if conf.pg_semaphore_max ~= math.floor(conf.pg_semaphore_max) then
-    errors[#errors + 1] = "pg_semaphore_max must be an integer greater than 0"
+  if conf.pg_max_concurrent_queries ~= math.floor(conf.pg_max_concurrent_queries) then
+    errors[#errors + 1] = "pg_max_concurrent_queries must be an integer greater than 0"
   end
 
   if conf.pg_semaphore_timeout < 0 then

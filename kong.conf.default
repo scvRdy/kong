@@ -447,7 +447,7 @@
                                  # See the `lua_ssl_trusted_certificate`
                                  # setting to specify a certificate authority.
 
-#pg_semaphore_max = 0            # Sets the number of semaphore resources made
+#pg_max_concurrent_queries = 0   # Sets the number of semaphore resources made
                                  # available to the semaphore used to limit
                                  # concurrent connections to the Postgres
                                  # database. The default value of 0 removes the

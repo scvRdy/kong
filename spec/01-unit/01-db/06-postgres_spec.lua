@@ -100,7 +100,7 @@ describe("kong.db [#postgres] connector", function()
       setup(function()
         local new_config = {
           pg_database = "kong",
-          pg_semaphore_max = 1,
+          pg_max_concurrent_queries = 1,
           pg_semaphore_timeout = 1,
         }
 
@@ -167,7 +167,7 @@ describe("kong.db [#postgres] connector", function()
       setup(function()
         local new_config = {
           pg_database = "kong",
-          pg_semaphore_max = 2,
+          pg_max_concurrent_queries = 2,
           pg_semaphore_timeout = 0.1,
         }
 

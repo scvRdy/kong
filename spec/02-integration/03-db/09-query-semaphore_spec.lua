@@ -19,7 +19,7 @@ describe("Postgres query locks", function()
       database = "postgres",
       nginx_conf = "spec/fixtures/custom_nginx.template",
       plugins = "slow-query",
-      pg_semaphore_max = 1,
+      pg_max_concurrent_queries = 1,
       pg_semaphore_timeout = 0.1,
     }))
     client = helpers.admin_client()
