@@ -850,7 +850,7 @@ describe("Configuration loader", function()
     end)
 
     it("accepts a pg_semaphore_timeout with a decimal", function()
-      local conf, err = conf_loader(nil, {
+      local _, err = conf_loader(nil, {
         pg_semaphore_timeout = 0.1
       })
       assert.is_nil(err)
