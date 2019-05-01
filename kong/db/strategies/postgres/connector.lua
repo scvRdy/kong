@@ -1089,7 +1089,7 @@ function _M.new(kong_config)
     local err
     sem, err = semaphore.new(config.sem_max)
     if not sem then
-      ngx.log(ngx.CRIT, "failure creating Postgres connector semaphore: " .. err)
+      ngx.log(ngx.CRIT, "failure creating Postgres connector semaphore: ", err)
     end
   end
 
