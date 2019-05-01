@@ -492,12 +492,12 @@ function _mt:query(sql)
     setkeepalive(connection)
   end
 
+  self:release_query_semaphore_resource()
+
   if res then
-    self:release_query_semaphore_resource()
     return res, nil, partial, num_queries or err
   end
 
-  self:release_query_semaphore_resource()
   return nil, err, partial, num_queries
 end
 
