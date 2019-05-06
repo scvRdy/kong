@@ -81,6 +81,7 @@ local plugins_iterator = require "kong.runloop.plugins_iterator"
 local balancer_execute = require("kong.runloop.balancer").execute
 local kong_error_handlers = require "kong.error_handlers"
 local BasePlugin   = require "kong.plugins.base_plugin"
+local reports = require "kong.reports"
 
 local kong             = kong
 local ngx              = ngx
@@ -132,7 +133,33 @@ local function plugin_protocols_match_current_subsystem(plugin)
 end
 
 
+local function sort_by_priority(a, b)
+  return (a.handler.PRIORITY or 0) > (b.handler.PRIORITY or 0)
+end
+
+
+local function get_loaded_plugins()
+  local loaded = assert(kong.db.plugins:load_plugin_schemas(kong.configuration.loaded_plugins))
+  table.sort(loaded, sort_by_priority)
+
+  if kong.configuration.anonymous_reports then
+
+    reports.configure_ping(kong.configuration)
+    reports.add_ping_value("database_version", kong.db.infos.db_ver)
+    reports.toggle(true)
+
+    loaded[#loaded + 1] = {
+      name = "reports",
+      handler = reports,
+    }
+  end
+
+  return loaded
+end
+
+
 local function build_new_plugins(version)
+
   local new_plugins = {
     version = version,
     map = {},
@@ -269,29 +296,6 @@ end
 
 local Kong = {}
 
-
-local function sort_plugins_for_execution(plugins)
-  -- sort plugins by priority
-  table.sort(plugins, function(a, b)
-    local priority_a = a.handler.PRIORITY or 0
-    local priority_b = b.handler.PRIORITY or 0
-    return priority_a > priority_b
-  end)
-
-  -- add reports plugin if not disabled
-  if kong.configuration.anonymous_reports then
-    local reports = require "kong.reports"
-
-    reports.configure_ping(kong.configuration)
-    reports.add_ping_value("database_version", kong.db.infos.db_ver)
-    reports.toggle(true)
-
-    plugins[#plugins + 1] = {
-      name = "reports",
-      handler = reports,
-    }
-  end
-end
 
 
 local function flush_delayed_response(ctx)
@@ -483,9 +487,8 @@ function Kong.init()
     mesh.init()
   end
 
-  -- Load plugins as late as possible so that everything is set up
-  loaded_plugins = assert(db.plugins:load_plugin_schemas(config.loaded_plugins))
-  sort_plugins_for_execution(loaded_plugins)
+
+  loaded_plugins = get_loaded_plugins()
 
   do
     local timeout = 60
