@@ -19,6 +19,9 @@ local singletons   = require "kong.singletons"
 local certificate  = require "kong.runloop.certificate"
 local concurrency  = require "kong.concurrency"
 local ngx_re       = require "ngx.re"
+local BasePlugin   = require "kong.plugins.base_plugin"
+local cache_warmup = require "kong.cache_warmup"
+local declarative  = require "kong.db.declarative"
 
 
 local kong         = kong
@@ -60,8 +63,12 @@ local ERROR        = ngx.ERROR
 local CACHE_ROUTER_OPTS = { ttl = 0 }
 local SUBSYSTEMS = constants.PROTOCOLS_WITH_SUBSYSTEM
 local EMPTY_T = {}
+local TTL_ZERO = { ttl = 0 }
 
 
+local loaded_plugins
+local declarative_entities
+local get_plugins, build_plugins, update_plugins
 
 local get_router, build_router
 local server_header = meta._SERVER_TOKENS
@@ -322,6 +329,251 @@ local function register_events()
       log(ERR, "failed broadcasting upstream ", operation, " to workers: ", err)
     end
   end)
+end
+
+
+
+
+local get_loaded_plugins
+do
+  local function sort_by_priority(a, b)
+    return (a.handler.PRIORITY or 0) > (b.handler.PRIORITY or 0)
+  end
+
+
+  get_loaded_plugins = function()
+    local loaded = assert(kong.db.plugins:load_plugin_schemas(kong.configuration.loaded_plugins))
+    table.sort(loaded, sort_by_priority)
+
+    if kong.configuration.anonymous_reports then
+
+      reports.configure_ping(kong.configuration)
+      reports.add_ping_value("database_version", kong.db.infos.db_ver)
+      reports.toggle(true)
+
+      loaded[#loaded + 1] = {
+        name = "reports",
+        handler = reports,
+      }
+    end
+
+    return loaded
+  end
+end
+
+
+
+do
+  local plugins
+
+
+  local function should_process_plugin(plugin)
+    local c = constants.PROTOCOLS_WITH_SUBSYSTEM
+    for _, protocol in ipairs(plugin.protocols) do
+      if c[protocol] == subsystem then
+        return true
+      end
+    end
+  end
+
+  build_plugins = function(version)
+
+    local new_plugins = {
+      map = {},
+      loaded = loaded_plugins,
+      combos = {},
+      cache = {},
+    }
+
+    if subsystem == "stream" then
+      new_plugins.phases = {
+        init_worker = {},
+        preread     = {},
+        log         = {},
+      }
+
+    else
+      new_plugins.phases = {
+        init_worker   = {},
+        certificate   = {},
+        rewrite       = {},
+        access        = {},
+        header_filter = {},
+        body_filter   = {},
+        log           = {},
+      }
+    end
+
+    for plugin, err in kong.db.plugins:each(1000) do
+      if err then
+        return nil, err
+      end
+
+      if should_process_plugin(plugin) then
+        new_plugins.map[plugin.name] = true
+        local cache_key = kong.db.plugins:cache_key(plugin)
+        new_plugins.cache[cache_key] = plugin
+
+        local combo_key = (plugin.route    and 1 or 0)
+                        + (plugin.service  and 2 or 0)
+                        + (plugin.consumer and 4 or 0)
+
+        new_plugins.combos[plugin.name] = new_plugins.combos[plugin.name] or {}
+        new_plugins.combos[plugin.name][combo_key] = true
+      end
+    end
+
+    for _, plugin in ipairs(loaded_plugins) do
+      if new_plugins.combos[plugin.name] then
+        for phase_name, phase in pairs(new_plugins.phases) do
+          if plugin.handler[phase_name] ~= BasePlugin[phase_name] then
+            phase[plugin.name] = true
+          end
+        end
+
+      else
+        if plugin.handler.init_worker ~= BasePlugin.init_worker then
+          new_plugins.phases.init_worker[plugin.name] = true
+        end
+      end
+    end
+
+    plugins = new_plugins
+
+    return true
+  end
+
+
+  update_plugins = function()
+    local version, err = kong.cache:get("plugins/version", TTL_ZERO, utils.uuid)
+    if err then
+      return nil, "failed to retrieve plugins version: " .. err
+    end
+
+    if not plugins or plugins.version ~= version then
+
+      local timeout = 60
+      if kong.configuration.database == "cassandra" then
+        -- cassandra_timeout is defined in ms
+        timeout = kong.configuration.cassandra_timeout / 1000
+
+      elseif kong.configuration.database == "postgres" then
+        -- pg_timeout is defined in ms
+        timeout = kong.configuration.pg_timeout / 1000
+      end
+      local plugins_mutex_opts = {
+        name = "plugins",
+        timeout = timeout,
+      }
+
+      local ok, err = concurrency.with_coroutine_mutex(plugins_mutex_opts, function()
+        -- we have the lock but we might not have needed it. check the
+        -- version again and rebuild if necessary
+        version, err = kong.cache:get("plugins/version", TTL_ZERO, utils.uuid)
+        if err then
+          return nil, "failed to re-retrieve version: " .. err
+        end
+
+        if not plugins or plugins.version ~= version then
+          local ok, err = build_plugins(version)
+          if not ok then
+            return nil, "error found when building plugins: " .. err
+          end
+        end
+
+        return true
+      end)
+      if not ok then
+        return nil, "failed to rebuild plugins: " .. err
+      end
+    end
+
+    return true
+  end
+
+  get_plugins = function()
+    return plugins
+  end
+end
+
+
+local function parse_declarative_config(kong_config)
+  if kong_config.database ~= "off" then
+    return {}
+  end
+
+  if not kong_config.declarative_config then
+    return {}
+  end
+
+  local dc = declarative.new_config(kong_config)
+  local entities, err = dc:parse_file(kong_config.declarative_config)
+  if not entities then
+    return nil, "error parsing declarative config file " ..
+                kong_config.declarative_config .. ":\n" .. err
+  end
+
+  return entities
+end
+
+
+local function load_declarative_config(kong_config, entities)
+  if kong_config.database ~= "off" then
+    return true
+  end
+
+  if not kong_config.declarative_config then
+    -- no configuration yet, just build empty plugins
+    local ok, err = build_plugins(utils.uuid())
+    if not ok then
+      error("error building initial plugins: " .. err)
+    end
+    return true
+  end
+
+  local opts = {
+    name = "declarative_config",
+  }
+  return concurrency.with_worker_mutex(opts, function()
+    local value = ngx.shared.kong:get("declarative_config:loaded")
+    if value then
+      return true
+    end
+
+    local ok, err = declarative.load_into_cache(entities)
+    if not ok then
+      return nil, err
+    end
+
+    kong.log.notice("declarative config loaded from ",
+                    kong_config.declarative_config)
+
+    ok, err = build_plugins(utils.uuid())
+    if not ok then
+      error("error building initial plugins: " .. err)
+    end
+
+    assert(build_router(kong.db, "init"))
+
+    mesh.init()
+
+    return true
+  end)
+end
+
+
+local function execute_cache_warmup(kong_config)
+  if kong_config.database == "off" then
+    return true
+  end
+
+  if ngx.worker.id() == 0 then
+    local ok, err = cache_warmup.execute(kong_config.db_cache_warmup_entities)
+    if not ok then
+      return nil, err
+    end
+  end
+  return true
 end
 
 
@@ -628,11 +880,66 @@ end
 return {
   build_router = build_router,
 
+  build_plugins = build_plugins,
+  update_plugins = update_plugins,
+  get_plugins = get_plugins,
+
   -- exported for unit-testing purposes only
   _set_check_router_rebuild = _set_check_router_rebuild,
 
+  init = {
+
+    after = function()
+      loaded_plugins = get_loaded_plugins()
+
+      if kong.configuration.database == "off" then
+        local err
+        declarative_entities, err = parse_declarative_config(kong.configuration)
+        if not declarative_entities then
+          error(err)
+        end
+      else
+        local ok, err = build_plugins("init")
+        if not ok then
+          error("error building initial plugins: " .. err)
+        end
+
+        assert(build_router(kong.db, "init"))
+      end
+    end
+  },
+
   init_worker = {
     before = function()
+      local ok, err = kong.cache:get("router:version", TTL_ZERO, function()
+        return "init"
+      end)
+      if not ok then
+        log(CRIT, "could not set router version in cache: ", err)
+        return
+      end
+
+      local ok, err = kong.cache:get("plugins/version", TTL_ZERO, function()
+        return "init"
+      end)
+      if not ok then
+        log(CRIT, "could not set plugins version in cache: ", err)
+        return
+      end
+
+      ok, err = load_declarative_config(kong.configuration, declarative_entities)
+      if not ok then
+        log(CRIT, "error loading declarative config file: ", err)
+        return
+      end
+
+      ok, err = execute_cache_warmup(kong.configuration)
+      if not ok then
+        log(CRIT, "error warming up cache: ", err)
+        return
+      end
+
+
       reports.init_worker()
 
       register_events()
