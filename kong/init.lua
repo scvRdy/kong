@@ -630,7 +630,11 @@ function Kong.init_worker()
 
 
   -- run plugins init_worker context
-  update_plugins()
+  local ok, err = update_plugins()
+  if not ok then
+    ngx_log(ngx_CRIT, "error updating plugins: ", err)
+    return
+  end
   local phase_plugins = plugins.phases.init_worker
   for _, plugin in ipairs(plugins.loaded) do
     if phase_plugins[plugin.name] then
