@@ -18,7 +18,7 @@ function _M.serialize(ngx)
     }
   end
 
-  local request_tls_ver, err = ngx_ssl.get_tls1_version_str()
+  local request_tls_ver = ngx_ssl.get_tls1_version_str()
   local request_uri = var.request_uri or ""
 
   return {
