@@ -26,7 +26,10 @@ function _M.serialize(ngx)
       querystring = req.get_uri_args(), -- parameters, as a table
       method = req.get_method(), -- http method
       headers = req.get_headers(),
-      size = var.request_length
+      size = var.request_length,
+      tls = {
+        version = ctx.KONG_TLS_VERSION
+      }
     },
     upstream_uri = var.upstream_uri,
     response = {

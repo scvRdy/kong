@@ -115,6 +115,14 @@ end
 
 
 local function execute()
+  local ver, err = ngx_ssl.get_tls1_version_str()
+  if err then
+    log(ERR, "could not retrieve TLS version: ", err)
+    return ngx.exit(ngx.ERROR)
+  else
+    ngx.ctx.KONG_TLS_VERSION = ver
+  end
+
   local sn, err = ngx_ssl.server_name()
   if err then
     log(ERR, "could not retrieve SNI: ", err)
